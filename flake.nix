@@ -2,7 +2,6 @@
   description = "Running Rust code for ESP32C3 on a QEMU emulator";
   inputs = {
     qemu-espressif.url = "github:SFrijters/nix-qemu-espressif";
-    flake-utils.url = "github:numtide/flake-utils";
     nixpkgs.follows = "qemu-espressif/nixpkgs";
     rust-overlay = {
       url = "github:oxalica/rust-overlay";
@@ -12,30 +11,27 @@
 
   outputs =
     {
+      self,
       nixpkgs,
-      flake-utils,
       qemu-espressif,
       rust-overlay,
       ...
     }:
-    # Maybe other systems work as well, but they have not been tested
-    flake-utils.lib.eachSystem
-      [
-        "x86_64-linux"
-        "aarch64-linux"
-      ]
-      (
-        system:
-        let
-          inherit (nixpkgs) lib;
-
-          pkgs = import nixpkgs {
+    let
+     forAllSystems =
+        function:
+        nixpkgs.lib.genAttrs [
+          # Maybe other systems work as well, but they have not been tested
+          "x86_64-linux"
+          "aarch64-linux"
+        ] (system: function (import nixpkgs {
             inherit system;
             overlays = [ (import rust-overlay) ];
-          };
+        }));
+    in
 
           pkgsCross = import nixpkgs {
-            inherit system;
+            system = pkgs.system;
             crossSystem = {
               # https://github.com/NixOS/nixpkgs/issues/281527#issuecomment-2180971963
               inherit system;
@@ -49,8 +45,6 @@
             rustc = toolchain;
             cargo = toolchain;
           };
-
-          qemu-esp32c3 = qemu-espressif.packages.${system}.qemu-esp32c3;
 
           elf-binary = pkgs.callPackage ./blinky { inherit rustPlatform; };
 
@@ -96,55 +90,55 @@
 
         in
         {
-          packages = {
-            inherit elf-binary flash-script emulate-script;
+          packages = forAllSystems (pkgs: rec {
             default = emulate-script;
-          };
+            inherit elf-binary flash-script emulate-script;
+            qemu-esp32c3 = qemu-espressif.packages.${pkgs.system}.qemu-esp32c3;
+          });
 
-          checks.default = pkgs.runCommand "qemu-check-${name}" { } ''
-            ${lib.getExe emulate-script}
-            mkdir "$out"
-            cp qemu-${name}.log "$out"
-          '';
+          checks = forAllSystems (pkgs: {
+            default = pkgs.runCommand "qemu-check-${name}" { } ''
+              ${lib.getExe self.packages.emulate-script}
+              mkdir "$out"
+              cp qemu-${name}.log "$out"
+            ''});
 
-          devShells.default = pkgs.mkShell {
-            name = "${name}-dev";
+          devShells = forAllSystems (pkgs: {
+            default = pkgs.mkShell {
+              name = "${name}-dev";
 
-            packages = [
-              pkgs.espflash
-              pkgs.esptool
-              pkgs.gnugrep
-              pkgs.netcat
-              qemu-esp32c3
-              toolchain
-            ];
+              packages = [
+                pkgs.espflash
+                pkgs.esptool
+                pkgs.gnugrep
+                pkgs.netcat
+                self.qemu-esp32c3
+                self.toolchain
+              ];
 
-            shellHook = ''
-              echo "==> Using toolchain version ${toolchain.version}"
-              echo "    Using cargo version $(cargo --version)"
-              echo "    Using rustc version $(rustc --version)"
-              echo "    Using espflash version $(espflash --version)"
-            '';
-          };
+              shellHook = ''
+                echo "==> Using toolchain version ${toolchain.version}"
+                echo "    Using cargo version $(cargo --version)"
+                echo "    Using rustc version $(rustc --version)"
+                echo "    Using espflash version $(espflash --version)"
+              '';
+            }}
+          );
 
-          apps = {
-            default = {
-              type = "app";
-              program = "${lib.getExe emulate-script}";
-            };
-
+          apps = forAllSystems (pkgs: rec {
+            default = emulate;
             emulate = {
               type = "app";
-              program = "${lib.getExe emulate-script}";
+              program = "${lib.getExe self.packages.emulate-script}";
             };
 
             flash = {
               type = "app";
-              program = "${lib.getExe flash-script}";
+              program = "${lib.getExe self.packages.flash-script}";
             };
-          };
+          });
 
-          formatter = pkgs.nixfmt-rfc-style;
+          formatter = forAllSystems (pkgs: pkgs.nixfmt-rfc-style);
         }
       );
 }
